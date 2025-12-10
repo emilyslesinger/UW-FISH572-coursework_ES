@@ -109,4 +109,4 @@ ggplot2::ggplot(index, aes(year, est)) +
   ggplot2::geom_line() +
   ggplot2::geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) +
   ggplot2::xlab('Year') + 
-  ggplot2::ylab('Biomass estimate (kg)')
+  ggplot2::ylab('Total biomass estimate')
