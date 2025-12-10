@@ -7,6 +7,7 @@ output: pdf_document
 
 ```{r setup, include=FALSE}
 library(ggplot2)
+library(sdmTMB)
 ```
 
 # Introduction
@@ -57,6 +58,7 @@ One potential use of simulated data is to examine alternative sampling designs. 
 ```{r SRS}
 source("coursework/simulations/functions_simulation.R")
 set.seed(245)
+N <- 100 * 100
 n <- 1500
 year <- 1
 dat.yr <- dplyr::filter(dat, year == 1)
@@ -79,7 +81,7 @@ ggplot(theSample, aes(X, Y)) +
 
 # Analysis
 
-Now that you have your samples, the goal is to estimate the population in all grid cells across the entire sampling area (100 X 100 grid for the simulated data). In other words, you want to create the simulated map but you have not sampled all cells, and those that you did sample are subject to uncertainty. There are numerous ways to analyze the data, which can be lumped into `design-based and`model-based.
+Now that you have your samples, the goal is to estimate the population in all grid cells across the entire sampling area (100 X 100 grid for the simulated data). In other words, you want to create the simulated map but you have not sampled all cells, and those that you did sample are subject to uncertainty. There are numerous ways to analyze the data, which can be lumped into `design-based` and `model-based`.
 
 # Model-based estimate of abundance
 
@@ -129,11 +131,11 @@ Predict to grid of full survey domain and map predictions and each component of 
 
 ```{r predict}
 # replicate grid for each year to make prediction grid
-grid <- readRDS(here::here("coursework/simulations/sim_data/grid.RDS")) 
-grid_yrs <- sdmTMB::replicate_df(grid, "year", unique(sim_dat$year))
+predictor_yrs <- sdmTMB::replicate_df(predictor_dat, "year", unique(dat$year))
 
 # predict
-predictions <- stats::predict(fit, newdata = grid_yrs, return_tmb_object = TRUE)
+predictions <- stats::predict(fit, newdata = predictor_yrs, 
+                              return_tmb_object = TRUE)
 
 # visualize predictions, then how fixed and random effects contribute
 plot_map <- function(dat, column) { ggplot(dat, aes(X, Y, fill = {{ column }})) + 
@@ -164,14 +166,15 @@ plot_map(predictions$data, epsilon_st) +
 
 ```{r index}
 # we will assume that the area of each grid cell is 1
-index <- sdmTMB::get_index(predictions, area = 1, bias_correct = TRUE)
+index <- sdmTMB::get_index(predictions, area = 1, bias_correct = TRUE,
+                           level = 0.95) # desired confidence interval here is 95%
 
 # plot index
 ggplot2::ggplot(index, aes(year, est)) + 
   ggplot2::geom_line() + 
   ggplot2::geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) + 
   ggplot2::xlab('Year') + 
-  ggplot2::ylab('Biomass estimate (kg)')
+  ggplot2::ylab('Total biomass estimate')
 ```
 
 # Design-based estimate of abundance
@@ -181,7 +184,7 @@ Assuming again that the area of each grid cell is 1, under simple random samplin
 ```{r index}
 index_db <- theSample |> 
   group_by(year) |> 
-  summarize(index = mean(observation) * 10000, 
+  summarize(index = mean(observation) * N, 
             variance = )
 #TODO: calculate variance and plot index with 95% CI compared to model-based index 
 ```
