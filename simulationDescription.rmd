@@ -169,7 +169,7 @@ plot_map(predictions$data, epsilon_st) +
 index <- sdmTMB::get_index(predictions, area = 1, bias_correct = TRUE,
                            level = 0.95) # desired confidence interval here is 95%
 
-# plot index
+# plot index with 95% CI
 ggplot2::ggplot(index, aes(year, est)) + 
   ggplot2::geom_line() + 
   ggplot2::geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) + 
@@ -179,7 +179,7 @@ ggplot2::ggplot(index, aes(year, est)) +
 
 # Design-based estimate of abundance
 
-Assuming again that the area of each grid cell is 1, under simple random sampling the design-based estimate is the product of the mean of observations and the total area (1 \* the number of grid cells in the domain).
+Assuming again that the area of each grid cell is 1, under simple random sampling the design-based estimate is the product of the mean of observations and the total area (1 \* the number of grid cells in the domain). We then calculate the variance, standard error and 95% confidence interval.
 
 ```{r index}
 index_db <- theSample |> 
@@ -188,7 +188,13 @@ index_db <- theSample |>
             variance = N^2 * (1-(n/N)) * (variance(observation)/n)
             ) |>
   mutate(se = sqrt(variance/n),
-         lower_ci = index - qt(0.975, df = n - 1) * se,
-         upper_ci = index + qt(0.975, df = n - 1) * se)
-#TODO: calculate variance and plot index with 95% CI compared to model-based index 
+         lwr = index - qt(0.975, df = n - 1) * se,
+         upr = index + qt(0.975, df = n - 1) * se)
+
+# plot index with 95% CI
+ggplot2::ggplot(index_db, aes(year, index)) + 
+  ggplot2::geom_line() + 
+  ggplot2::geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) + 
+  ggplot2::xlab('Year') + 
+  ggplot2::ylab('Total biomass estimate')
 ```
