@@ -37,7 +37,7 @@ Data were simulated across a square grid of 100 X 100 cells with depth contours.
 
 ```{r grid}
 # make sure in the correct directory and using the dataset number assigned to you
-dat <- readRDS("coursework/simulations/sim_data/sim_dat_10.RDS")
+dat <- readRDS("coursework/simulations/sim_data/sim_dat_1.RDS")
 predictor_dat <- readRDS("coursework/simulations/sim_data/grid.RDS")
 predictor_dat$negDepth <- -1 * predictor_dat$depth
 
@@ -163,7 +163,7 @@ fit <- sdmTMB::sdmTMB(
   family = sdmTMB::lognormal(), 
   spatial = "on", # c("on", "off")
   spatiotemporal = "iid" # c("iid", "ar1", "rw", "off")
-  # turn spatiotemporal = "off" if get errors about sigma_E 
+  # turn spatiotemporal = "off" if get sanity warnings about sigma_E being small
 )
 
 fit
