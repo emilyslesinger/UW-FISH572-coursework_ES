@@ -1,0 +1,914 @@
+---
+title: "Slesinger Simulation"
+author: "Emily Slesinger"
+date: "2026-02-12"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(sdmTMB)
+library(viridis)
+```
+
+# Introduction
+
+Practicing "turning knobs" to get a better sense of how the different parameters work. I am simulated data set 17.
+
+# Simulated data
+
+Data were simulated across a square grid of 100 X 100 cells with depth contours.
+
+```{r load data}
+sim.dat = readRDS("coursework/simulations/sim_data/sim_dat_17.RDS")
+head(sim.dat)
+grid.dat = readRDS("coursework/simulations/sim_data/grid.RDS")
+grid.dat$negDepth = -1 * grid.dat$depth
+head(grid.dat)
+```
+
+There are eight (8) columns in a simulated dataset: - year: the year, being 1:6; - X: the location along the x-axis; - Y: the location along the y-axis; - eta: the simulated values; - observed: the observed value of the simulated data (i.e. observation error applied to eta); - eta_scaled: the simulated data scaled by the mean of simulated data in a reference simulated dataset; - observed_scaled: the observed data scaled by the mean of observations in a reference simulated dataset; - depth_scaled: the depth scaled by subtracting the mean and dividing by the standard deviation.
+
+```{r plot checks}
+#plot grid
+ggplot(subset(grid.dat, year == 1), aes(x = X, y = Y)) +
+  geom_raster(aes(fill = negDepth)) +
+  scale_fill_viridis() + 
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) # Remove expansion on x-axis
+
+#plot eta
+ggplot(subset(sim.dat, year == 1), aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  scale_fill_viridis() +  
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) # Remove expansion on x-axis
+
+#plot observed
+ggplot(subset(sim.dat, year == 1), aes(x = X, y = Y)) +
+  geom_raster(aes(fill = observed_scaled)) +
+  scale_fill_viridis() + 
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) # Remove expansion on x-axis
+```
+
+The grid shows deeper depths in the middle along x-axis. The simulated data (eta) shows variation throughout X and Y space. The simulated data (observed) shows grainier data and less smoothing across the patches.
+
+# Sampling from the simulated data
+
+Using simple random sampling (SRS). Testing process for just one year. Implementing dplyr version provided in second example because this is usually how I like to code.
+
+```{r SRS year 1}
+source("coursework/simulations/functions_sampling.R")
+set.seed(245)
+sample.dat.yr = sim.dat %>% filter(year == 1) %>% slice_sample(n = 100) # taking 100 random samples
+
+# create sample (as if you were a boat sampling once in each sampled grid cell)
+obsCV = 0.2  # if using "observed" set this to zero (observation error already applied)
+catchabilityPars = list(mean=1,var=0.1) #related to gear selectivity (and availability to net)
+sample = sampleGrid.fn(sample.dat.yr, obsCV, catchabilityPars, varName="eta_scaled")
+
+#plot sample
+ggplot(sample, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = observation)) +
+  scale_fill_viridis() +  
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) # Remove expansion on x-axis
+```
+
+Using SRS across all years (6 in total).
+
+```{r SRS all years}
+# sample from each year of survey data
+sample.dat.all.yr = sim.dat %>% group_by(year) %>% slice_sample(n = 100)
+
+samples = sampleGrid.fn(as.data.frame(sample.dat.all.yr), obsCV, catchabilityPars, varName="eta_scaled")
+
+# plot samples over surface of mean without observation error (taken as "true")
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+```
+
+# Analysis - Design-based
+
+Assuming that the area of each grid cell is 1, under simple random sampling the design-based estimate is the product of the mean of observations and the total area (1 \* the number of grid cells in the domain). We then calculate the variance, standard error and 95% confidence interval.
+
+```{r index_db}
+N = 100*100
+n = 100
+index_db = samples %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n/N)) * (var(observation)/n)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n - 1) * se,
+         upr = index + qt(0.975, df = n - 1) * se)
+
+# plot index with 95% CI
+ggplot(index_db, aes(x = year, y = index)) + 
+  geom_line() + 
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) + 
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+We see that the biomass estimate increases drastically in year 4 and remains higher afterwards.
+
+# Analysis - Model-based
+
+## Fit model and check convergence and parameter values
+
+```{r fit sdmTMB model}
+# create mesh to size of samples
+mesh = make_mesh(samples, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 50)
+plot(mesh)
+
+model.fit = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples,
+  mesh = mesh,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+
+model.fit
+
+sanity(model.fit) # model checking
+```
+
+## Inspect model for goodness of fit
+
+```{r inspect sdmTMB model}
+# randomized quantile residuals
+samples$resids = residuals(model.fit) 
+hist(samples$resids) # looks ok but a bit left tailed
+
+# qq plot
+qqnorm(samples$resids)
+# qqline not working?
+
+# spatial residuals
+ggplot(samples, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year) 
+# hard for the untrained eye to assess if this looks good or not (I think it looks good?)
+```
+
+## Predict from model to all locations and years
+
+Predict to grid of full survey domain and map predictions and each component of the predictions (fixed and random effects) to see contributions of each to the full prediction.
+
+```{r predict sdmTMB model}
+# predict
+predictions = predict(model.fit, newdata = grid.dat, return_tmb_object = TRUE)
+
+# visualize predictions, then how fixed and random effects contribute
+plot_map = function(sim.dat, column) { ggplot(sim.dat, aes(x = X, y = Y, fill = {{ column }})) + 
+    geom_raster() + facet_wrap(~year) + coord_fixed() }
+
+# full prediction
+plot_map(predictions$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+
+# fixed effects only (year)
+plot_map(predictions$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+
+# spatial random effects
+plot_map(predictions$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+
+# spatiotemporal random effects
+plot_map(predictions$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+```
+
+## Compute abundance index
+
+```{r index sdmTMB model}
+# we will assume that the area of each grid cell is 1
+index_mb = get_index(predictions, area = 1, bias_correct = TRUE, level = 0.95) 
+# desired confidence interval here is 95%
+
+# plot index with 95% CI
+ggplot(index_mb, aes(x = year, y = est)) + 
+  geom_line() + 
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.4) + 
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+Similar pattern to the design-based but let's compare them together.
+
+# Compare the two model ests.
+
+```{r compare abundance estimates}
+head(index_db)
+head(index_mb)
+
+index_db.b = index_db %>% select(year, index, lwr, upr) %>%
+  mutate(type = "Design")
+index_mb.b = index_mb %>% select(year, est, lwr, upr) %>%
+  rename(index = est) %>%
+  mutate(type = "Model")
+index_real = sim.dat %>% group_by(year) %>% 
+  summarize(index.eta = sum(eta_scaled))
+index.all = rbind(index_db.b, index_mb.b)
+
+# plot both together
+ggplot() +
+  geom_line(data = index.all, aes(x = year, y = index, color = type, fill = type)) +
+  geom_ribbon(data = index.all, aes(x = year, y = index, color = type, fill = type, ymin = lwr, ymax = upr), 
+              alpha = 0.3) +
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+# looks pretty similar but see more differences from year 4-6
+```
+
+# Exercise 1: Change number of sampling units.
+
+## Set up sampling units
+
+Sampling 100 units in the 100x100 is the equivalent of sampling 1% of the entire grid. Let's try 5% and 10%.
+
+```{r set up sampling}
+(100*100)*0.05
+# 500
+(100*100)*0.1
+# 1000
+
+# sample from each year of survey data
+set.seed(245)
+sample.dat.1p = sim.dat %>% group_by(year) %>% slice_sample(n = 100)
+sample.dat.5p = sim.dat %>% group_by(year) %>% slice_sample(n = 500)
+sample.dat.10p = sim.dat %>% group_by(year) %>% slice_sample(n = 1000)
+
+samples.1p = sampleGrid.fn(as.data.frame(sample.dat.1p), obsCV, catchabilityPars, varName="eta_scaled")
+samples.5p = sampleGrid.fn(as.data.frame(sample.dat.5p), obsCV, catchabilityPars, varName="eta_scaled")
+samples.10p = sampleGrid.fn(as.data.frame(sample.dat.10p), obsCV, catchabilityPars, varName="eta_scaled")
+
+# plot samples over surface of mean without observation error (taken as "true")
+# 1%
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.1p, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# 5%
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.5p, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# 10%
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.10p, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+```
+
+Wow looks like I might be confused? The 10% bubbles almost fill up the entire grid...but maybe that is just the plotting.
+
+## Analysis - Design-based
+
+```{r Design-based estimate}
+N = 100*100
+n.1 = 100
+n.5 = 500
+n.10 = 1000
+
+index_db.1p = samples.1p %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n.1/N)) * (var(observation)/n.1)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n.1 - 1) * se,
+         upr = index + qt(0.975, df = n.1 - 1) * se,
+         sample = "1perc")
+
+index_db.5p = samples.5p %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n.5/N)) * (var(observation)/n.5)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n.5 - 1) * se,
+         upr = index + qt(0.975, df = n.5 - 1) * se,
+         sample = "5perc")
+
+index_db.10p = samples.10p %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n.10/N)) * (var(observation)/n.10)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n.10 - 1) * se,
+         upr = index + qt(0.975, df = n.10 - 1) * se,
+         sample = "10perc")
+
+index_db.allp = rbind(index_db.1p, index_db.5p, index_db.10p) %>%
+  mutate(sample = factor(sample, levels = c("1perc", "5perc", "10perc")))
+
+# plot index with 95% CI
+ggplot() + 
+  geom_line(data = index_db.allp, aes(x = year, y = index, color = sample, fill = sample), size = 2) + 
+  geom_ribbon(data = index_db.allp, aes(x = year, y = index, color = sample, fill = sample, ymin = lwr, ymax = upr),
+              alpha = 0.25) + 
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+1% and 10% follow similar trend, but the 5% misses the slight dip in Y5. 1% though misses decline in Y6. Unsurprisingly, the higher the sample size the smaller the confidence intervals around the estimate. What is interesting though is that in the 1% situation, the larger confidence intervals end up overlapping with the true data, but the 5 and 10% ones don't. So in a way, the larger sample size decrease in CI shows greater "precision" but it is not?
+
+## Analysis - Model-based
+
+```{r Model-based estimate - mesh + run}
+# create mesh to size of samples
+mesh.1p = make_mesh(samples.1p, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 50)
+plot(mesh.1p)
+mesh.5p = make_mesh(samples.5p, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 75)
+plot(mesh.5p)
+mesh.10p = make_mesh(samples.10p, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 100)
+plot(mesh.10p)
+
+model.fit.1p = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples.1p,
+  mesh = mesh.1p,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+model.fit.1p
+sanity(model.fit.1p) # model checking: good
+
+model.fit.5p = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples.5p,
+  mesh = mesh.5p,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+model.fit.5p
+sanity(model.fit.5p) # model checking: good
+
+model.fit.10p = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples.10p,
+  mesh = mesh.10p,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+model.fit.10p
+sanity(model.fit.10p) # model checking: good
+```
+
+```{r inspect model fit}
+# randomized quantile residuals
+samples.1p$resids = residuals(model.fit.1p) 
+hist(samples.1p$resids) # looks ok but a bit left tailed
+
+samples.5p$resids = residuals(model.fit.5p) 
+hist(samples.5p$resids) # looks ok but stronger tails?
+
+samples.10p$resids = residuals(model.fit.10p) 
+hist(samples.10p$resids) # ooo strong left tailed
+
+# qq plot
+qqnorm(samples.1p$resids)
+qqnorm(samples.5p$resids)
+qqnorm(samples.10p$resids) # oh ya can see left tail issue
+
+# spatial residuals
+ggplot(samples.1p, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year)
+ggplot(samples.5p, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year) 
+ggplot(samples.10p, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year) 
+```
+
+```{r compute abundance}
+# visualize predictions, then how fixed and random effects contribute
+plot_map = function(sim.dat, column) { ggplot(sim.dat, aes(x = X, y = Y, fill = {{ column }})) + 
+    geom_raster() + facet_wrap(~year) + coord_fixed() }
+
+# predict
+predictions.1p = predict(model.fit.1p, newdata = grid.dat, return_tmb_object = TRUE)
+predictions.5p = predict(model.fit.5p, newdata = grid.dat, return_tmb_object = TRUE)
+predictions.10p = predict(model.fit.10p, newdata = grid.dat, return_tmb_object = TRUE)
+
+# full prediciton
+plot_map(predictions.1p$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+plot_map(predictions.5p$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+plot_map(predictions.10p$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+
+# fixed effects
+plot_map(predictions.1p$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+plot_map(predictions.5p$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+plot_map(predictions.10p$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+
+# spatial random only
+plot_map(predictions.1p$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.5p$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.10p$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+
+# spatiaotemporal random only
+plot_map(predictions.1p$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.5p$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.10p$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+
+# we will assume that the area of each grid cell is 1
+index_mb.1p = get_index(predictions.1p, area = 1, bias_correct = TRUE, level = 0.95) %>% 
+  mutate(sample = "1perc")
+index_mb.5p = get_index(predictions.5p, area = 1, bias_correct = TRUE, level = 0.95) %>%
+  mutate(sample = "5perc")
+index_mb.10p = get_index(predictions.10p, area = 1, bias_correct = TRUE, level = 0.95) %>%
+  mutate(sample = "10perc")
+index_mb.allp = rbind(index_mb.1p, index_mb.5p, index_mb.10p) %>%
+  mutate(sample = factor(sample, levels = c("1perc", "5perc", "10perc")))
+# desired confidence interval here is 95%
+
+# plot index with 95% CI
+ggplot() + 
+  geom_line(data = index_mb.allp, aes(x = year, y = est, color = sample, fill = sample), size = 2) + 
+  geom_ribbon(data = index_mb.allp, aes(x = year, y = est, color = sample, fill = sample, ymin = lwr, ymax = upr),
+              alpha = 0.25) + 
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+## Compare the two model ests.
+
+```{r compare abundance estimates}
+head(index_db.allp)
+head(index_mb.allp)
+
+index_db.allp.b = index_db.allp %>% select(year, sample, index, lwr, upr) %>%
+  mutate(type = "Design")
+index_mb.allp.b = index_mb.allp %>% select(year, sample, est, lwr, upr) %>%
+  rename(index = est) %>%
+  mutate(type = "Model")
+index.allp = rbind(index_db.allp.b, index_mb.allp.b)
+head(index.allp)
+
+# plot both together
+ggplot() +
+  geom_line(data = index.allp, aes(x = year, y = index, color = type, fill = type)) +
+  geom_ribbon(data = index.allp, aes(x = year, y = index, color = type, fill = type, ymin = lwr, ymax = upr), 
+              alpha = 0.3) +
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year") +
+  facet_grid(.~sample)
+```
+
+Ok main takeaway is that sampling more in the grid does not necessarily improve your estimate of abundance. Idk why. How does oversampling work? Is it the same idea as "overfitting" a model or did I not deal with the increase in sample size well?
+
+# Exercise 2: Cannot sample shallow water (negDepth \> -10)
+
+## Set up sampling units
+
+More negative scaled depth = shallower
+
+```{r set up sampling}
+grid.dat %>% filter(negDepth >= -10) %>% group_by(year) %>% summarize(mds = mean(max(depth_scaled)))
+# -1.06
+# check 
+ggplot(subset(grid.dat, depth_scaled >= -1.06), aes(x = X, y = Y)) + 
+  geom_raster(aes(fill = negDepth)) +
+  scale_fill_viridis() +
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) # Remove expansion on x-axis
+
+# sample from each year of survey data
+set.seed(245)
+sample.dat = sim.dat %>% group_by(year) %>% slice_sample(n = 100)
+sample.dat.no.s = sim.dat %>% filter(depth_scaled >= -1.06) %>% 
+  group_by(year) %>% slice_sample(n = 100)
+
+samples = sampleGrid.fn(as.data.frame(sample.dat), obsCV, catchabilityPars, varName="eta_scaled")
+samples.no.s = sampleGrid.fn(as.data.frame(sample.dat.no.s), obsCV, catchabilityPars, varName="eta_scaled")
+
+# plot samples over surface of mean without observation error (taken as "true")
+# all
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# no shallow
+ggplot(sim.dat, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.no.s, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+```
+
+Can see no sampling in shallow regions (far left and right side for this grid).
+
+## Analysis - Design-based
+
+```{r Design-based estimate}
+N = 100*100
+n = 100
+
+index_db = samples %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n/N)) * (var(observation)/n)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n - 1) * se,
+         upr = index + qt(0.975, df = n - 1) * se,
+         sample = "all")
+
+index_db.no.s = samples.no.s %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n/N)) * (var(observation)/n)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n - 1) * se,
+         upr = index + qt(0.975, df = n - 1) * se,
+         sample = "no shallow")
+
+index_db.alld = rbind(index_db, index_db.no.s)
+
+# plot index with 95% CI
+ggplot() + 
+  geom_line(data = index_db.alld, aes(x = year, y = index, color = sample, fill = sample), size = 2) + 
+  geom_ribbon(data = index_db.alld, aes(x = year, y = index, color = sample, fill = sample, ymin = lwr, ymax = upr),
+              alpha = 0.25) + 
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+It is better in some parts (towards Y4-6), so perhaps that is a spatial thing occurring ...have more issues with no shallow in the earlier years.
+
+## Analysis - Model-based
+
+```{r Model-based estimate - mesh + run}
+# create mesh to size of samples
+mesh = make_mesh(samples, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 50)
+plot(mesh)
+mesh.no.s = make_mesh(samples.no.s, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 75)
+plot(mesh.no.s)
+
+model.fit = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples,
+  mesh = mesh,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+model.fit
+sanity(model.fit) # model checking: good
+
+model.fit.no.s = sdmTMB(
+  formula = observation ~ 0 + as.factor(year), 
+  data = samples.no.s,
+  mesh = mesh.no.s,
+  time = "year",
+  family = lognormal(), 
+  spatial = "on", # c("on", "off")
+  spatiotemporal = "iid", # c("iid", "ar1", "rw", "off")
+)
+model.fit.no.s
+sanity(model.fit.no.s) # model checking: good
+```
+
+```{r inspect model fit}
+# randomized quantile residuals
+samples$resids = residuals(model.fit) 
+hist(samples$resids) # looks ok but a bit left tailed
+
+samples.no.s$resids = residuals(model.fit.no.s) 
+hist(samples.no.s$resids) # looks actually a little better
+
+# qq plot
+qqnorm(samples$resids)
+qqnorm(samples.no.s$resids)
+
+# spatial residuals
+ggplot(samples, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year)
+ggplot(samples.no.s, aes(x = X, y = Y, color = resids)) + 
+  scale_color_gradient2() +
+  geom_point() + 
+  coord_fixed() + 
+  facet_wrap(~year) 
+```
+
+```{r compute abundance}
+# visualize predictions, then how fixed and random effects contribute
+plot_map = function(sim.dat, column) { ggplot(sim.dat, aes(x = X, y = Y, fill = {{ column }})) + 
+    geom_raster() + facet_wrap(~year) + coord_fixed() }
+
+# predict
+predictions = predict(model.fit, newdata = grid.dat, return_tmb_object = TRUE)
+predictions.no.s = predict(model.fit.no.s, newdata = grid.dat, return_tmb_object = TRUE)
+
+# full prediciton
+plot_map(predictions$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+plot_map(predictions.no.s$data, exp(est)) + 
+  scale_fill_viridis_c(trans = "sqrt") + 
+  ggtitle("Prediction (fixed effects + all random effects)")
+
+# fixed effects
+plot_map(predictions$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+plot_map(predictions.no.s$data, exp(est_non_rf)) + 
+  ggtitle("Prediction (fixed effects only)") + 
+  scale_fill_viridis_c(trans = "sqrt")
+
+# spatial random only
+plot_map(predictions$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.no.s$data, omega_s) + 
+  ggtitle("Spatial random effects only") + 
+  scale_fill_gradient2()
+# oh is my mesh not big enough ?
+# increased mesh but still having corners cut off
+
+# spatiaotemporal random only
+plot_map(predictions$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+plot_map(predictions.no.s$data, epsilon_st) + 
+  ggtitle("Spatiotemporal random effects only") + 
+  scale_fill_gradient2()
+
+# we will assume that the area of each grid cell is 1
+index_mb = get_index(predictions, area = 1, bias_correct = TRUE, level = 0.95) %>% 
+  mutate(sample = "all")
+index_mb.no.s = get_index(predictions.no.s, area = 1, bias_correct = TRUE, level = 0.95) %>%
+  mutate(sample = "no shallow")
+index_mb.alld = rbind(index_mb, index_mb.no.s)
+# desired confidence interval here is 95%
+
+# plot index with 95% CI
+ggplot() + 
+  geom_line(data = index_mb.alld, aes(x = year, y = est, color = sample, fill = sample), size = 2) + 
+  geom_ribbon(data = index_mb.alld, aes(x = year, y = est, color = sample, fill = sample, ymin = lwr, ymax = upr),
+              alpha = 0.25) + 
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+## Compare the two model ests.
+
+```{r compare abundance estimates}
+head(index_db.alld)
+head(index_mb.alld)
+
+index_db.alld.b = index_db.alld %>% select(year, sample, index, lwr, upr) %>%
+  mutate(type = "Design")
+index_mb.alld.b = index_mb.alld %>% select(year, sample, est, lwr, upr) %>%
+  rename(index = est) %>%
+  mutate(type = "Model")
+index.alld = rbind(index_db.alld.b, index_mb.alld.b)
+head(index.alld)
+
+# plot both together
+ggplot() +
+  geom_line(data = index.alld, aes(x = year, y = index, color = type, fill = type)) +
+  geom_ribbon(data = index.alld, aes(x = year, y = index, color = type, fill = type, ymin = lwr, ymax = upr), 
+              alpha = 0.3) +
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year") +
+  facet_grid(.~sample)
+```
+
+Similar assessment between both of the models which is they do better picking up the downward turn towards later part of time series and do not do well in the earlier part of time series (well overestimated).
+
+# Exercies 3: Test out stratified sampling.
+
+From year 1, we think we need to split up top into 2 strata (3 strata total)
+
+## Test grid for 3 strata
+
+```{r build strata}
+head(sim.dat)
+# based off Year 1, more obs in Y50-100
+
+test = sim.dat %>% 
+  mutate(Stratum = ifelse(X <= 49 & Y > 49, "TL", 
+                          ifelse(X > 49 & Y > 49, "TR", "B")))
+
+ggplot(subset(test, year == 1), aes(x = X, y = Y)) +
+  geom_raster(aes(fill = Stratum)) +
+  #scale_fill_viridis() +  
+  scale_x_continuous(expand = c(0, 0)) + # Remove expansion on x-axis
+  scale_y_continuous(expand = c(0, 0)) 
+# ok it works! 
+
+sim.dat.strata = sim.dat %>% 
+  mutate(Stratum = ifelse(X <= 49 & Y > 49, "TL", 
+                          ifelse(X > 49 & Y > 49, "TR", "B")))
+head(sim.dat.strata)
+```
+
+## Set up sampling units
+
+Need different sampling "n" because not 100 for each stratum.
+
+```{r set up sampling}
+
+# sample from each year of survey data
+set.seed(245)
+sample.dat = sim.dat.strata %>% group_by(year) %>% slice_sample(n = 100)
+sample.dat.TL = sim.dat.strata %>% filter(Stratum == "TL") %>% 
+  group_by(year) %>% slice_sample(n = 25)
+sample.dat.TR = sim.dat.strata %>% filter(Stratum == "TR") %>% 
+  group_by(year) %>% slice_sample(n = 25)
+sample.dat.B = sim.dat.strata %>% filter(Stratum == "B") %>% 
+  group_by(year) %>% slice_sample(n = 50)
+
+samples = sampleGrid.fn(as.data.frame(sample.dat), obsCV, catchabilityPars, varName="eta_scaled")
+samples.TL = sampleGrid.fn(as.data.frame(sample.dat.TL), obsCV, catchabilityPars, varName="eta_scaled")
+samples.TR = sampleGrid.fn(as.data.frame(sample.dat.TR), obsCV, catchabilityPars, varName="eta_scaled")
+samples.B = sampleGrid.fn(as.data.frame(sample.dat.B), obsCV, catchabilityPars, varName="eta_scaled")
+
+# plot samples over surface of mean without observation error (taken as "true")
+# all
+ggplot(sim.dat.strata, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# TL
+ggplot(sim.dat.strata, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.TL, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# TR
+ggplot(sim.dat.strata, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.TR, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+
+# B
+ggplot(sim.dat.strata, aes(x = X, y = Y)) +
+  geom_raster(aes(fill = eta_scaled)) +
+  geom_point(data = samples.B, aes(size = observation), pch = 21) +
+  scale_fill_viridis() + 
+  scale_size_area() +
+  coord_cartesian(expand = FALSE)   +
+  facet_wrap(~year)
+```
+
+Sampling occuring in respective strata...if equal sample size for each strata and for whole grid...do we get same answer?
+
+## Analysis - Design-based
+
+```{r Design-based estimate}
+N = 100*100
+n = 100
+nT = 25
+nB = 50
+
+index_db = samples %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(n/N)) * (var(observation)/n)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = n - 1) * se,
+         upr = index + qt(0.975, df = n - 1) * se,
+         sample = "all")
+
+index_db.TL = samples.TL %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(nT/N)) * (var(observation)/nT)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = nT - 1) * se,
+         upr = index + qt(0.975, df = nT - 1) * se,
+         sample = "Top Left")
+
+index_db.TR = samples.TR %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(nT/N)) * (var(observation)/nT)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = nT - 1) * se,
+         upr = index + qt(0.975, df = nT - 1) * se,
+         sample = "Top Right")
+
+index_db.B = samples.B %>%
+  group_by(year) %>%
+  summarize(index = mean(observation) * N, 
+            variance = N^2 * (1-(nB/N)) * (var(observation)/nB)) %>%
+  mutate(se = sqrt(variance),
+         lwr = index - qt(0.975, df = nB - 1) * se,
+         upr = index + qt(0.975, df = nB - 1) * se,
+         sample = "Bottom")
+
+index_db.strata = rbind(index_db.TL, index_db.TR, index_db.B) %>%
+  group_by(year) %>%
+  summarize(index = mean(index),
+            variance = mean(variance),
+            se = mean(se), 
+            lwr = mean(lwr), 
+            upr = mean(upr)) %>%
+  mutate(sample = "Strata")
+
+index_db.allstr = rbind(index_db, index_db.strata)
+
+# plot index with 95% CI
+ggplot() + 
+  geom_line(data = index_db.allstr, aes(x = year, y = index, color = sample, fill = sample), size = 2) + 
+  geom_ribbon(data = index_db.allstr, aes(x = year, y = index, color = sample, fill = sample, ymin = lwr, ymax = upr),
+              alpha = 0.25) + 
+  geom_point(data = index_real, aes(x = year, y = index.eta), size = 3, color = "black") +
+  labs(y = "Total biomass estimate", 
+       x = "Year")
+```
+
+STOPPING HERE---I DON'T UNDERSTAND HOW TO GET ABUDNANCE FROM STRATA \*\*\*\*\*\*\*\*
