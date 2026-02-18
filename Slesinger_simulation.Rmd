@@ -2,7 +2,7 @@
 title: "Slesinger Simulation"
 author: "Emily Slesinger"
 date: "2026-02-12"
-output: pdf_document
+output: html_document
 ---
 
 ```{r setup, include=FALSE}
@@ -245,7 +245,7 @@ ggplot() +
 
 Sampling 100 units in the 100x100 is the equivalent of sampling 1% of the entire grid. Let's try 5% and 10%.
 
-```{r set up sampling}
+```{r set up sampling E1}
 (100*100)*0.05
 # 500
 (100*100)*0.1
@@ -294,7 +294,7 @@ Wow looks like I might be confused? The 10% bubbles almost fill up the entire gr
 
 ## Analysis - Design-based
 
-```{r Design-based estimate}
+```{r Design-based estimate E1}
 N = 100*100
 n.1 = 100
 n.5 = 500
@@ -344,7 +344,7 @@ ggplot() +
 
 ## Analysis - Model-based
 
-```{r Model-based estimate - mesh + run}
+```{r Model-based estimate - mesh + run E1}
 # create mesh to size of samples
 mesh.1p = make_mesh(samples.1p, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 50)
 plot(mesh.1p)
@@ -390,7 +390,7 @@ model.fit.10p
 sanity(model.fit.10p) # model checking: good
 ```
 
-```{r inspect model fit}
+```{r inspect model fit E1}
 # randomized quantile residuals
 samples.1p$resids = residuals(model.fit.1p) 
 hist(samples.1p$resids) # looks ok but a bit left tailed
@@ -424,7 +424,7 @@ ggplot(samples.10p, aes(x = X, y = Y, color = resids)) +
   facet_wrap(~year) 
 ```
 
-```{r compute abundance}
+```{r compute abundance E1}
 # visualize predictions, then how fixed and random effects contribute
 plot_map = function(sim.dat, column) { ggplot(sim.dat, aes(x = X, y = Y, fill = {{ column }})) + 
     geom_raster() + facet_wrap(~year) + coord_fixed() }
@@ -501,7 +501,7 @@ ggplot() +
 
 ## Compare the two model ests.
 
-```{r compare abundance estimates}
+```{r compare abundance estimates E1}
 head(index_db.allp)
 head(index_mb.allp)
 
@@ -532,7 +532,7 @@ Ok main takeaway is that sampling more in the grid does not necessarily improve 
 
 More negative scaled depth = shallower
 
-```{r set up sampling}
+```{r set up sampling E2}
 grid.dat %>% filter(negDepth >= -10) %>% group_by(year) %>% summarize(mds = mean(max(depth_scaled)))
 # -1.06
 # check 
@@ -575,7 +575,7 @@ Can see no sampling in shallow regions (far left and right side for this grid).
 
 ## Analysis - Design-based
 
-```{r Design-based estimate}
+```{r Design-based estimate E2}
 N = 100*100
 n = 100
 
@@ -613,7 +613,7 @@ It is better in some parts (towards Y4-6), so perhaps that is a spatial thing oc
 
 ## Analysis - Model-based
 
-```{r Model-based estimate - mesh + run}
+```{r Model-based estimate - mesh + run E2}
 # create mesh to size of samples
 mesh = make_mesh(samples, xy_cols = c("X", "Y"), type = "cutoff_search", n_knots = 50)
 plot(mesh)
@@ -645,7 +645,7 @@ model.fit.no.s
 sanity(model.fit.no.s) # model checking: good
 ```
 
-```{r inspect model fit}
+```{r inspect model fit E2}
 # randomized quantile residuals
 samples$resids = residuals(model.fit) 
 hist(samples$resids) # looks ok but a bit left tailed
@@ -670,7 +670,7 @@ ggplot(samples.no.s, aes(x = X, y = Y, color = resids)) +
   facet_wrap(~year) 
 ```
 
-```{r compute abundance}
+```{r compute abundance E2}
 # visualize predictions, then how fixed and random effects contribute
 plot_map = function(sim.dat, column) { ggplot(sim.dat, aes(x = X, y = Y, fill = {{ column }})) + 
     geom_raster() + facet_wrap(~year) + coord_fixed() }
@@ -733,7 +733,7 @@ ggplot() +
 
 ## Compare the two model ests.
 
-```{r compare abundance estimates}
+```{r compare abundance estimates E2}
 head(index_db.alld)
 head(index_mb.alld)
 
@@ -789,7 +789,7 @@ head(sim.dat.strata)
 
 Need different sampling "n" because not 100 for each stratum.
 
-```{r set up sampling}
+```{r set up sampling E3}
 
 # sample from each year of survey data
 set.seed(245)
@@ -848,7 +848,7 @@ Sampling occuring in respective strata...if equal sample size for each strata an
 
 ## Analysis - Design-based
 
-```{r Design-based estimate}
+```{r Design-based estimate E3}
 N = 100*100
 n = 100
 nT = 25
